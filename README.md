@@ -42,7 +42,7 @@
 | [`adapters/`](adapters/) | 各 agent 工具的接入与限制 |
 | [`profiles/example-minimal/`](profiles/example-minimal/) | 最小可跑示例（无业务口径） |
 | [`scripts/`](scripts/README.md) | 七个只读辅助脚本：波次计算、模型预检、补丁三关（范围/正确/集成）、工单↔DAG 一致性、本仓自检（用法见其 README） |
-| [`tickets/`](tickets/) | 本仓自身的工单与证据留痕（1.1.0 批次） |
+| [`profiles/example-minimal/tickets/`](profiles/example-minimal/tickets/) | 7 张示例工单（`SPEC-001`/`CTR-001`/`API-014`/`WEB-021`/`INT-001`/`VER-001`/`ACC-001`），照抄格式用 |
 
 ## 目录约定
 
@@ -57,6 +57,9 @@ orca_team_skill/
 ├── profiles/                # 项目档案/示例
 └── scripts/                 # 只读计算与验收辅助
 ```
+
+根级 `tickets/` 是本仓自身的工单与证据留痕，**本地保留、不入库**（`.gitignore` 用根锚定 `/tickets/`）；
+随仓分发的示例工单在 `profiles/example-minimal/tickets/`。
 
 ## 设计边界
 
