@@ -41,7 +41,7 @@
 | [`templates/`](templates/) | 工单、角色卡、回报、状态行、Runbook |
 | [`adapters/`](adapters/) | 各 agent 工具的接入与限制 |
 | [`profiles/example-minimal/`](profiles/example-minimal/) | 最小可跑示例（无业务口径） |
-| [`scripts/`](scripts/README.md) | 六个只读辅助脚本：波次计算、模型预检、补丁范围关/正确关、工单↔DAG 一致性、本仓自检（用法见其 README） |
+| [`scripts/`](scripts/README.md) | 七个只读辅助脚本：波次计算、模型预检、补丁三关（范围/正确/集成）、工单↔DAG 一致性、本仓自检（用法见其 README） |
 | [`tickets/`](tickets/) | 本仓自身的工单与证据留痕（1.1.0 批次） |
 
 ## 目录约定
@@ -67,4 +67,4 @@ orca_team_skill/
 
 ## 版本
 
-当前 `1.1.0`。规范条目编号（`R-*`、`L-*`、`W-*`、`K-*`、`P-*`、`M-*`、`T-*`、`V-*`、`X-*`、`A-*`、`S-*`）在 `SPEC.md` 附录 A 汇总，供工单引用。
+当前 `1.2.0`。规范条目编号（`R-*`、`L-*`、`W-*`、`K-*`、`P-*`、`M-*`、`T-*`、`V-*`、`X-*`、`A-*`、`S-*`）在 `SPEC.md` 附录 A 汇总，供工单引用。

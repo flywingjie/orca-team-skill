@@ -1,4 +1,4 @@
-# AGENTS.md — 多 Agent 协作总入口（OTS 1.1）
+# AGENTS.md — 多 Agent 协作总入口（OTS 1.2）
 
 本文件供 Codex、pi、Cursor、Claude Code 及其他读取 `AGENTS.md` 的 agent 使用。
 规范正文是 [`SPEC.md`](SPEC.md)；本文件是入口与执行摘要。

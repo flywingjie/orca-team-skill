@@ -57,7 +57,7 @@ TASK_LINE_RE = re.compile(r"^\s{2}(\S+)\s+role=")
 GATE_RE = re.compile(r"^  (\S+)\s+after=")
 
 # 并行单可能尚未产出，文件不存在则跳过（不判失败）
-PARALLEL_SCRIPTS = ["check_consistency.py", "check_evidence.py"]
+PARALLEL_SCRIPTS = ["check_consistency.py", "check_evidence.py", "check_integration.py"]
 
 
 @dataclass

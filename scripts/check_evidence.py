@@ -7,10 +7,16 @@
 
     python scripts/check_evidence.py --ticket ... --patch-dir ... --json
 
+    python scripts/check_evidence.py --ticket ... --patch-dir ... --print-fingerprint
+
 检查项（对应 references/07-verification.md §2.2 正确关）：
     ① 工单验收项覆盖：解析「## 验收」小节的 | # | 命令 | 期望结果 | 表格
-    ② 命令是否真实执行：工单验收命令与 manifest.checks 规范化后匹配，且 exit_code == 0
+    ② 命令是否真实执行：工单验收命令与 manifest.checks 规范化后匹配，
+       实际 exit_code == expect_exit_code（缺省 0，SPEC.md V-12）才通过；
+       不等 → command-failed（判失败）；负路径探针可声明 expect_exit_code=1
     ③ evidence 存在且非空：checks[].evidence 相对补丁包目录解析
+    ③b evidence 内容指纹（SPEC.md V-10）：文件字节 sha256 与 checks[].evidence_sha256 比对
+    ③c 命令回显（弱 provenance）：evidence 文本是否含规范化后的命令（仅提示）
     ④ manifest 基本完整性：必填字段齐全、files 非空、checks 结构合法
     ⑤ 负路径覆盖：未勾选项只报告，不计入失败
 
@@ -18,11 +24,14 @@
 读入工单与 manifest 用 utf-8-sig：兼容 Windows 上 PowerShell 5.1 默认写出的 UTF-8 BOM，
 带 BOM 与不带 BOM 的输入必须得到同一条正确关结论。
 退出码：0 正确关通过；1 有失败项；2 参数错误或文件读取/解析失败。
+--print-fingerprint：只打印每条 check 的 evidence 文件 sha256（<command>\\t<sha256>），
+不做任何校验，退出码恒 0；只打印不回填 manifest.json。
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import sys
@@ -40,6 +49,8 @@ SEPARATOR_CELL_RE = re.compile(r"^:?-{2,}:?$")
 HEADING_RE = re.compile(r"^(#{1,6})\s*(.*?)\s*$")
 # 水平分隔线
 HR_RE = re.compile(r"^\s*(-{3,}|\*{3,}|_{3,})\s*$")
+# evidence_sha256：小写十六进制 64 位（SPEC.md V-10）
+FINGERPRINT_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 def die(msg: str) -> NoReturn:
@@ -216,18 +227,31 @@ def resolve_evidence(patch_dir: Path, ev: str) -> Path:
     return patch_dir.joinpath(*p.parts)
 
 
-def exit_code_ok(value: Any) -> bool:
-    """exit_code 是否表示成功（0）。非 0 / 缺失 / 非法一律视为失败。"""
+def normalize_exit_code(value: Any) -> int | None:
+    """把 exit_code / expect_exit_code 规范化为整数；缺失/非法/布尔返回 None。
+
+    - 布尔（True/False）不是合法退出码 → None（避免 `True == 1` 误判）；
+    - 整数直接返回；浮点仅当为整数值时返回整数，否则 None；
+    - 字符串去除首尾空白后 `int()`，非数字返回 None；
+    - 其余类型（列表、字典等）返回 None。
+    """
     if isinstance(value, bool):
-        return False
-    if isinstance(value, (int, float)):
-        return value == 0
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value) if value.is_integer() else None
     if isinstance(value, str):
         try:
-            return int(value.strip()) == 0
+            return int(value.strip())
         except ValueError:
-            return False
-    return False
+            return None
+    return None
+
+
+def exit_code_ok(value: Any) -> bool:
+    """exit_code 是否表示成功（0）。非 0 / 缺失 / 非法一律视为失败。"""
+    return normalize_exit_code(value) == 0
 
 
 # ------------------------------------------------------------ 检查项
@@ -271,7 +295,11 @@ def check_acceptance_items(items: list[dict]) -> list[dict]:
 
 
 def check_commands_executed(items: list[dict], check_list: list) -> tuple[list[dict], int]:
-    """② 命令是否真实执行：返回 (findings, 已执行条数)。"""
+    """② 命令是否真实执行：返回 (findings, 已执行条数)。
+
+    判定（SPEC.md V-12）：实际 `exit_code` 与 `expect_exit_code`（缺省 0）**相等**才通过；
+    不相等 → command-failed（判失败）。`expect_exit_code` 缺省 0 保证既有 manifest 行为不变。
+    """
     out: list[dict] = []
     normalized: list[tuple[str, dict]] = []
     for chk in check_list:
@@ -297,11 +325,28 @@ def check_commands_executed(items: list[dict], check_list: list) -> tuple[list[d
         executed += 1
         for _c, chk in matches:
             ec = chk.get("exit_code")
-            if not exit_code_ok(ec):
+            actual = normalize_exit_code(ec)
+            expected_raw = chk.get("expect_exit_code", 0)
+            expected = normalize_exit_code(expected_raw)
+            note = ""
+            if expected is None:
+                # V-12：expect_exit_code 类型非法（非整数/非数字字符串）→ 按期望 0 处理，
+                # 但不因此放过真实失败（若实际非 0，仍判 command-failed）。
+                expected = 0
+                note = "（expect_exit_code 格式非法，按期望 0 处理）"
+            if actual is None:
                 out.append(
                     finding(
                         "command-failed",
-                        f"验收命令 exit_code != 0（exit={ec!r}）：{cmd}",
+                        f"验收命令 exit_code 非法（exit={ec!r}）：{cmd}{note}",
+                        cmd,
+                    )
+                )
+            elif actual != expected:
+                out.append(
+                    finding(
+                        "command-failed",
+                        f"验收命令 exit_code={actual} != 期望 {expected}（exit={ec!r}）：{cmd}{note}",
                         cmd,
                     )
                 )
@@ -327,6 +372,166 @@ def check_evidence_files(check_list: list, patch_dir: Path) -> list[dict]:
         elif path.stat().st_size == 0:
             out.append(finding("evidence-empty", f"checks[{idx}] evidence 为空（0 字节）：{ev}", cmd))
     return out
+
+
+# ------------------------------------------------------------ 证据指纹 / 命令回显
+
+
+def file_sha256(path: Path) -> str:
+    """对文件**字节**计算 sha256，返回小写 64 位 hex。
+
+    用 read_bytes() 而非 read_text()：换行 / BOM / 编码差异不进入指纹，
+    保证「带 BOM 与不带 BOM 的同一份文件得到相同指纹」（SPEC.md V-10）。
+    """
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def is_valid_fingerprint(value: Any) -> bool:
+    """evidence_sha256 是否合法：必须是字符串且为 64 位小写 hex。
+
+    非字符串（数字、布尔、列表等）一律视为格式非法。
+    """
+    return isinstance(value, str) and bool(FINGERPRINT_RE.match(value))
+
+
+def check_evidence_fingerprints(check_list: list, patch_dir: Path) -> list[dict]:
+    """③b evidence 内容指纹（SPEC.md V-10）：文件字节 sha256 与 manifest 记录比对。
+
+    判定顺序（工单 OTC-004 验收表，先定格式再重算）：
+        字段缺失 / null          → evidence-no-fingerprint      提示（兼容旧 manifest，不判失败）
+        字段格式非法             → evidence-fingerprint-invalid 判失败
+        重算与记录一致          → evidence-fingerprint-ok       提示
+        重算与记录不一致        → evidence-fingerprint-mismatch 判失败
+    必须**先按字节重算、再按文本读取**（命令回显 ③c 在文本层做）。
+    文件缺失 / 为空已由 ③ 报出，此处跳过以避免崩溃（负路径要求）。
+    """
+    out: list[dict] = []
+    for idx, chk in enumerate(check_list, 1):
+        if not isinstance(chk, dict):
+            continue
+        cmd = strip_backticks(str(chk.get("command", "")))
+        ev = chk.get("evidence")
+        if not isinstance(ev, str) or not ev.strip():
+            continue  # evidence-missing 已由 ③ 报出
+        path = resolve_evidence(patch_dir, ev)
+        if not path.exists() or not path.is_file():
+            continue  # evidence-missing 已由 ③ 报出
+        raw = chk.get("evidence_sha256")
+        if raw is None:
+            out.append(
+                finding(
+                    "evidence-no-fingerprint",
+                    f"checks[{idx}] 未记录 evidence_sha256（兼容旧 manifest，需补齐）",
+                    cmd,
+                    fatal=False,
+                )
+            )
+            continue
+        if not is_valid_fingerprint(raw):
+            out.append(
+                finding(
+                    "evidence-fingerprint-invalid",
+                    f"checks[{idx}] evidence_sha256 格式非法（需 64 位小写 hex）：{raw!r}",
+                    cmd,
+                )
+            )
+            continue
+        actual = file_sha256(path)
+        if actual == raw:
+            out.append(
+                finding(
+                    "evidence-fingerprint-ok",
+                    f"checks[{idx}] 证据指纹一致：{actual[:12]}…",
+                    cmd,
+                    fatal=False,
+                )
+            )
+        else:
+            out.append(
+                finding(
+                    "evidence-fingerprint-mismatch",
+                    f"checks[{idx}] 证据指纹不一致（manifest {raw[:12]}…，实际 {actual[:12]}…）",
+                    cmd,
+                )
+            )
+    return out
+
+
+def check_command_echo(check_list: list, patch_dir: Path) -> list[dict]:
+    """③c 命令回显（弱 provenance）：evidence 文本是否含规范化后的命令。
+
+    仅判提示：pytest / npm 等工具输出通常不含命令行原文，缺回显不判失败。
+    文本用 utf-8-sig 读取（与 manifest 同规则，带/不带 BOM 结论一致）。
+    """
+    out: list[dict] = []
+    for idx, chk in enumerate(check_list, 1):
+        if not isinstance(chk, dict):
+            continue
+        cmd = strip_backticks(str(chk.get("command", "")))
+        normalized = normalize_command(cmd)
+        if not normalized:
+            continue  # 空命令已由 ① empty-command 报出，回显无从查起
+        ev = chk.get("evidence")
+        if not isinstance(ev, str) or not ev.strip():
+            continue  # evidence-missing 已由 ③ 报出
+        path = resolve_evidence(patch_dir, ev)
+        if not path.exists() or not path.is_file():
+            continue  # evidence-missing 已由 ③ 报出
+        try:
+            text = path.read_text(encoding="utf-8-sig")
+        except Exception as e:  # noqa: BLE001
+            out.append(
+                finding(
+                    "evidence-no-command-echo",
+                    f"checks[{idx}] evidence 读取失败，无法检查命令回显：{e}",
+                    cmd,
+                    fatal=False,
+                )
+            )
+            continue
+        if normalized in text:
+            out.append(
+                finding(
+                    "evidence-command-echo",
+                    f"checks[{idx}] evidence 文本含命令回显：{normalized}",
+                    cmd,
+                    fatal=False,
+                )
+            )
+        else:
+            out.append(
+                finding(
+                    "evidence-no-command-echo",
+                    f"checks[{idx}] evidence 文本不含命令回显（工具输出可能不含命令行原文）：{normalized}",
+                    cmd,
+                    fatal=False,
+                )
+            )
+    return out
+
+
+def print_fingerprints(check_list: list, patch_dir: Path) -> int:
+    """--print-fingerprint 只读模式：打印每条 check 的 evidence 文件 sha256。
+
+    每行 `<command>\\t<sha256>`（命令规范化后），供 worker 直接抄进 manifest；
+    只打印不回填 manifest.json；不做任何校验，退出码恒 0。
+    evidence 缺失或文件不存在时向 stderr 提示并跳过该行（stdout 保持机器可读）。
+    """
+    for idx, chk in enumerate(check_list, 1):
+        if not isinstance(chk, dict):
+            continue
+        cmd = strip_backticks(str(chk.get("command", "")))
+        normalized = normalize_command(cmd)
+        ev = chk.get("evidence")
+        if not isinstance(ev, str) or not ev.strip():
+            print(f"checks[{idx}] 缺少 evidence 字段，跳过指纹打印", file=sys.stderr)
+            continue
+        path = resolve_evidence(patch_dir, ev)
+        if not path.exists() or not path.is_file():
+            print(f"checks[{idx}] evidence 不存在：{ev}，跳过指纹打印", file=sys.stderr)
+            continue
+        print(f"{normalized}\t{file_sha256(path)}")
+    return 0
 
 
 def check_manifest_integrity(manifest: dict, check_list: list) -> list[dict]:
@@ -372,6 +577,11 @@ def main() -> int:
     ap.add_argument("--ticket", required=True, help="工单 Markdown 路径")
     ap.add_argument("--patch-dir", required=True, help="补丁包目录（含 manifest.json 与 evidence/）")
     ap.add_argument("--json", action="store_true", help="输出 JSON")
+    ap.add_argument(
+        "--print-fingerprint",
+        action="store_true",
+        help="只打印每条 check 的 evidence 文件 sha256（<command>\\t<sha256>），不做校验",
+    )
     args = ap.parse_args()
 
     ticket_path = Path(args.ticket).expanduser()
@@ -400,12 +610,18 @@ def main() -> int:
     raw_checks = manifest.get("checks")
     check_list: list = raw_checks if isinstance(raw_checks, list) else []
 
+    if args.print_fingerprint:
+        return print_fingerprints(check_list, patch_dir)
+
     f1 = check_acceptance_items(items)
     f2, executed = check_commands_executed(items, check_list)
     f3 = check_evidence_files(check_list, patch_dir)
+    # ③b 字节指纹必须**先于** ③c 文本读取（工单 OTC-004：先按字节算，再按文本读）
+    f3b = check_evidence_fingerprints(check_list, patch_dir)
+    f3c = check_command_echo(check_list, patch_dir)
     f4 = check_manifest_integrity(manifest, check_list)
     f5 = check_negative_paths(unchecked)
-    findings = f1 + f2 + f3 + f4 + f5
+    findings = f1 + f2 + f3 + f3b + f3c + f4 + f5
 
     fatal_count = sum(1 for f in findings if f["fatal"])
     info_count = sum(1 for f in findings if not f["fatal"])

@@ -9,7 +9,7 @@ description: >-
   "worker 接管", "补丁验收", "并行开发", "task DAG", "指定模型跑 agent".
 ---
 
-# Orca Team Standard（OTS 1.1）
+# Orca Team Standard（OTS 1.2）
 
 多角色、多 Agent 并行协作的执行口径。**规范正文在 `SPEC.md`**；本文件是入口与快速操作卡。
 
