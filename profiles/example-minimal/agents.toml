@@ -1,0 +1,37 @@
+# 角色 -> agent / 模型映射（示例占位）
+# 真实项目按可用模型替换；model_family 用于并发互斥判重。
+
+[[agents]]
+name = "coordinator"
+role_card = "roles/coordinator.md"
+agent = "claude"
+model = "example-strong-model"
+model_family = "family-a"
+
+[[agents]]
+name = "designer"
+role_card = "roles/designer.md"
+agent = "claude"
+model = "example-strong-model"
+model_family = "family-a"
+
+[[agents]]
+name = "implementer"
+role_card = "roles/implementer.md"
+agent = "pi"
+model = "example-code-model-a"
+model_family = "family-b"
+
+[[agents]]
+name = "integrator"
+role_card = "roles/integrator.md"
+agent = "claude"
+model = "example-strong-model"
+model_family = "family-a"
+
+[[agents]]
+name = "verifier"
+role_card = "roles/verifier.md"
+agent = "pi"
+model = "example-code-model-b"
+model_family = "family-c"

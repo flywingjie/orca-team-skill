@@ -1,0 +1,12 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+
+# 本仓脚本产出的临时/夹具
+tmp/
+*.chk
+
+# 协调者工单与证据留痕（不入库；示例工单在 profiles/example-minimal/tickets/，不受影响）
+/tickets/
