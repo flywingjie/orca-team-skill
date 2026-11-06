@@ -8,5 +8,8 @@ __pycache__/
 tmp/
 *.chk
 
+# 凭据（任何 token / 密钥文件一律不入库）
+.gh_token
+
 # 协调者工单与证据留痕（不入库；示例工单在 profiles/example-minimal/tickets/，不受影响）
 /tickets/
