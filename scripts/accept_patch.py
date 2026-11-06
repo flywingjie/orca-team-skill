@@ -17,7 +17,7 @@
     - 补丁路径可解析
     - 补丁路径 ⊆ --allowed（支持 glob 与目录前缀）
     - manifest.files 与补丁路径一致
-    - 每条 check 的证据文件存在
+    - 每条 check 的证据文件存在、非空，且位于补丁包目录内
     - 可选：git apply --check
     - 危险路径/凭据文件拦截
 
@@ -37,8 +37,31 @@ from typing import NoReturn
 
 DIFF_GIT_RE = re.compile(r"^diff --git a/(.+?) b/(.+)$")
 PLUS_RE = re.compile(r"^\+\+\+ b/(.+)$")
-FORBIDDEN_NAMES = {".env", "id_rsa", "id_ed25519", ".gh_token", "credentials.json"}
+FORBIDDEN_NAMES = {
+    ".env",
+    "id_rsa",
+    "id_ed25519",
+    ".gh_token",
+    "credentials.json",
+    "credentials",
+    "secrets.json",
+    ".netrc",
+    "_netrc",
+    ".npmrc",
+    ".pgpass",
+    ".git-credentials",
+    ".htpasswd",
+}
 FORBIDDEN_SUFFIXES = {".pem", ".key", ".p12", ".pfx"}
+
+
+def is_within(path: Path, root: Path) -> bool:
+    """path 解析后是否位于 root 之内（防 ../与绝对路径逃出补丁包）。"""
+    try:
+        path.resolve().relative_to(root.resolve())
+        return True
+    except ValueError:
+        return False
 
 
 def die(msg: str) -> NoReturn:
@@ -91,6 +114,11 @@ def is_forbidden(path: str) -> bool:
 def main() -> int:
     try:
         sys.stdout.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+    try:
+        # die() 的中文错误走 stderr；不重配会在管道里按 GBK 编码（坑 2）
+        sys.stderr.reconfigure(encoding="utf-8")
     except Exception:
         pass
 
@@ -166,7 +194,9 @@ def main() -> int:
             errors.append(f"checks[{i}] 缺少 evidence")
             continue
         ev_path = (base_dir / str(ev)).resolve()
-        if not ev_path.exists():
+        if not is_within(ev_path, base_dir):
+            evidence_errors.append(f"checks[{i}] 证据不在补丁包目录内：{ev}")
+        elif not ev_path.exists():
             evidence_errors.append(f"checks[{i}] 证据不存在：{ev}")
         elif ev_path.stat().st_size == 0:
             evidence_errors.append(f"checks[{i}] 证据为空：{ev}")

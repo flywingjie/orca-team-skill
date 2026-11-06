@@ -12,8 +12,17 @@ API-014+WEB-021 -> INT-001 -> VER-001 -> ACC-001），决策门 3 个；
 preflight.py 输出「任务 × 模型分配表」并以「预检通过」结尾；
 check_consistency.py 对 tickets/ 与 DAG 输出「结论：一致」。
 
-只读：本脚本不创建、修改、删除任何仓库文件，只以子进程调用既有脚本。
-仅使用标准库（Python 3.11+，tomllib 不涉及）。
+断言范围：
+- plan/preflight/check_consistency 对示例的结构与一致性断言；
+- 七个脚本 --help 均可运行（缺省文件跳过并标注）；
+- L-1 负例：两个任务共用 worktree 的临时 DAG 必须被 plan.py 判退出码 2；
+- 正确关/范围关夹具端到端（scripts/fixtures/：正例、指纹不一致、
+  证据越出包、危险文件）；
+- 集成关端到端（系统临时目录建 git 临时仓：正例、未跟踪新文件
+  scope-violation、破坏性命令 cmd-unsafe 拒执行）。
+
+不修改仓库文件；端到端夹具只写系统临时目录（结束即清理）；
+`scripts/fixtures/` 是随仓分发的静态夹具。仅使用标准库（Python 3.11+）。
 
 退出码：0 = 全部断言通过；1 = 有断言失败；2 = 参数错误或前置文件缺失。
 """
@@ -23,8 +32,10 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import NoReturn
@@ -33,6 +44,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DAG = REPO_ROOT / "profiles" / "example-minimal" / "orchestration.toml"
 DEFAULT_AGENTS = REPO_ROOT / "profiles" / "example-minimal" / "agents.toml"
 DEFAULT_TICKETS = REPO_ROOT / "profiles" / "example-minimal" / "tickets"
+FIXTURES = REPO_ROOT / "scripts" / "fixtures"
 
 SUBPROCESS_TIMEOUT = 120  # 秒；超时判失败
 
@@ -276,6 +288,308 @@ def parallel_help_assertions() -> list[Assertion]:
     return out
 
 
+# ---------------------------------------------------------------- 端到端断言
+
+
+def plan_worktree_assertion() -> list[Assertion]:
+    """⑤ L-1 负例：两个任务共用 worktree 的临时 DAG 必须被判结构错误（退出码 2）。"""
+    with tempfile.TemporaryDirectory(prefix="ots-selftest-") as td:
+        dag = Path(td) / "dup-worktree.toml"
+        dag.write_text(
+            '[[tasks]]\n'
+            'id = "T-1"\n'
+            'worktree = "wt-same"\n'
+            'files = ["a.txt"]\n'
+            'depends_on = []\n'
+            '\n'
+            '[[tasks]]\n'
+            'id = "T-2"\n'
+            'worktree = "wt-same"\n'
+            'files = ["b.txt"]\n'
+            'depends_on = ["T-1"]\n',
+            encoding="utf-8",
+            newline="\n",
+        )
+        r = run_script("plan.py", "--dag", str(dag))
+    msg_ok = "worktree 跨任务复用" in r["err"]
+    ok = r["exit"] == 2 and msg_ok
+    return [
+        Assertion(
+            "plan.worktree-reuse",
+            ok,
+            f"exit={r['exit']}（期望 2）stderr 含'worktree 跨任务复用'={msg_ok}",
+        )
+    ]
+
+
+def evidence_fixture_assertions() -> list[Assertion]:
+    """⑥ 正确关夹具端到端：正例 / 指纹不一致 / 证据越出包。"""
+    cases = [
+        ("check_evidence.ok", "pkg-ok", 0, "正确关：通过"),
+        ("check_evidence.fingerprint-mismatch", "pkg-mismatch", 1, "evidence-fingerprint-mismatch"),
+        ("check_evidence.outside-package", "pkg-escape", 1, "evidence-outside-package"),
+    ]
+    out: list[Assertion] = []
+    ticket = FIXTURES / "ticket-ok.md"
+    for name, pkg, want_exit, needle in cases:
+        if not ticket.exists() or not (FIXTURES / pkg / "manifest.json").exists():
+            out.append(Assertion(name, None, f"夹具缺失（{pkg}），跳过"))
+            continue
+        r = run_script("check_evidence.py", "--ticket", str(ticket), "--patch-dir", str(FIXTURES / pkg))
+        hit = needle in r["out"]
+        out.append(
+            Assertion(
+                name,
+                r["exit"] == want_exit and hit,
+                f"exit={r['exit']}（期望 {want_exit}）含'{needle}'={hit}",
+            )
+        )
+    return out
+
+
+def accept_patch_fixture_assertions() -> list[Assertion]:
+    """⑦ 范围关夹具端到端：危险文件 / 证据越出包（--no-apply-check，不依赖 git）。"""
+    cases = [
+        ("accept_patch.secret-file", "pkg-secret", "危险文件"),
+        ("accept_patch.outside-package", "pkg-escape", "不在补丁包目录内"),
+    ]
+    out: list[Assertion] = []
+    for name, pkg, needle in cases:
+        manifest = FIXTURES / pkg / "manifest.json"
+        if not manifest.exists():
+            out.append(Assertion(name, None, f"夹具缺失（{pkg}），跳过"))
+            continue
+        r = run_script("accept_patch.py", "--manifest", str(manifest), "--no-apply-check")
+        hit = needle in r["out"]
+        out.append(
+            Assertion(
+                name,
+                r["exit"] == 1 and hit,
+                f"exit={r['exit']}（期望 1）含'{needle}'={hit}",
+            )
+        )
+    return out
+
+
+# 集成关端到端夹具：补丁正文与 DAG（手工小 diff，只在临时仓使用）
+PATCH_MODIFY = (
+    "diff --git a/base.txt b/base.txt\n"
+    "--- a/base.txt\n"
+    "+++ b/base.txt\n"
+    "@@ -1 +1 @@\n"
+    "-base\n"
+    "+base changed\n"
+)
+PATCH_ADD = (
+    "diff --git a/new.txt b/new.txt\n"
+    "new file mode 100644\n"
+    "--- /dev/null\n"
+    "+++ b/new.txt\n"
+    "@@ -0,0 +1 @@\n"
+    "+hello\n"
+)
+PATCH_STRAY = (
+    "diff --git a/base.txt b/base.txt\n"
+    "--- a/base.txt\n"
+    "+++ b/base.txt\n"
+    "@@ -1 +1 @@\n"
+    "-base\n"
+    "+base stray\n"
+    "diff --git a/stray.txt b/stray.txt\n"
+    "new file mode 100644\n"
+    "--- /dev/null\n"
+    "+++ b/stray.txt\n"
+    "@@ -0,0 +1 @@\n"
+    "+stray\n"
+)
+DAG_OK = (
+    "[orchestration]\n"
+    'name = "selftest-integration"\n'
+    "max_parallel = 4\n"
+    "\n"
+    "[[tasks]]\n"
+    'id = "T-1"\n'
+    'files = ["base.txt"]\n'
+    "depends_on = []\n"
+    "\n"
+    "[[tasks]]\n"
+    'id = "T-2"\n'
+    'files = ["new.txt"]\n'
+    'depends_on = ["T-1"]\n'
+)
+DAG_SINGLE = (
+    "[orchestration]\n"
+    'name = "selftest-integration-single"\n'
+    "max_parallel = 4\n"
+    "\n"
+    "[[tasks]]\n"
+    'id = "T-1"\n'
+    'files = ["base.txt"]\n'
+    "depends_on = []\n"
+)
+
+
+def _git(repo: Path, *args: str) -> None:
+    """在临时仓执行 git；失败抛 RuntimeError（由上层转成断言失败）。"""
+    p = subprocess.run(
+        ["git", "-C", str(repo), *args],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=SUBPROCESS_TIMEOUT,
+    )
+    if p.returncode != 0:
+        raise RuntimeError(
+            f"git {' '.join(args)} 失败：{(p.stdout or '') + (p.stderr or '')}".strip()
+        )
+
+
+def _make_integration_repo(td: Path) -> Path:
+    """建临时 git 仓：单提交 base.txt（LF、不转换），供 apply 与 diff 基线。"""
+    repo = td / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.email", "selftest@example.com")
+    _git(repo, "config", "user.name", "selftest")
+    _git(repo, "config", "core.autocrlf", "false")
+    (repo / "base.txt").write_bytes(b"base\n")
+    _git(repo, "add", "base.txt")
+    _git(repo, "commit", "-qm", "base")
+    return repo
+
+
+def _write_patch(root: Path, task: str, patch_text: str, files: list[str]) -> None:
+    pdir = root / task
+    pdir.mkdir(parents=True, exist_ok=True)
+    (pdir / "change.patch").write_text(patch_text, encoding="utf-8", newline="\n")
+    (pdir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "ticket": task,
+                "worker": "selftest",
+                "base_commit": "0" * 40,
+                "files": files,
+                "checks": [],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+        newline="\n",
+    )
+
+
+def _run_integration(
+    td: Path,
+    repo: Path,
+    dag_text: str,
+    patch_specs: list[tuple[str, str, list[str]]],
+    gate_cmd: str,
+    consumer_cmd: str,
+    ev_name: str,
+) -> tuple[dict, Path]:
+    patches = td / f"patches-{ev_name}"
+    patches.mkdir(parents=True, exist_ok=True)
+    for task, text, files in patch_specs:
+        _write_patch(patches, task, text, files)
+    dag = td / f"dag-{ev_name}.toml"
+    dag.write_text(dag_text, encoding="utf-8", newline="\n")
+    ev = td / ev_name
+    args = [
+        "check_integration.py",
+        "--repo", str(repo),
+        "--patches", str(patches),
+        "--dag", str(dag),
+        "--evidence-out", str(ev),
+        "--base", "HEAD",
+    ]
+    if gate_cmd:
+        args += ["--gate-cmd", gate_cmd]
+    if consumer_cmd:
+        args += ["--consumer-cmd", consumer_cmd]
+    return run_script(*args), ev
+
+
+def integration_assertions() -> list[Assertion]:
+    """⑧ 集成关端到端（系统临时目录建 git 仓）：正例 / 未跟踪夹带 / 破坏性命令。"""
+    if shutil.which("git") is None:
+        return [Assertion("check_integration.e2e", None, "git 不可用，跳过")]
+    out: list[Assertion] = []
+
+    # 正例：两个补丁按拓扑序合入，门禁与消费方命令实跑
+    td = Path(tempfile.mkdtemp(prefix="ots-itg-ok-"))
+    try:
+        repo = _make_integration_repo(td)
+        r, ev = _run_integration(
+            td, repo, DAG_OK,
+            [("T-1", PATCH_MODIFY, ["base.txt"]), ("T-2", PATCH_ADD, ["new.txt"])],
+            "echo gate-ok", "echo consumer-ok", "ev-ok",
+        )
+        manifest_ok = (ev / "integration-manifest.json").is_file()
+        gate_ok = (ev / "gate-01.txt").is_file()
+        consumer_ok = (ev / "consumer-01.txt").is_file()
+        passed = r["exit"] == 0 and manifest_ok and gate_ok and consumer_ok
+        out.append(
+            Assertion(
+                "check_integration.ok",
+                passed,
+                f"exit={r['exit']}（期望 0）manifest={manifest_ok} gate证据={gate_ok} consumer证据={consumer_ok}",
+            )
+        )
+    except Exception as e:  # noqa: BLE001
+        out.append(Assertion("check_integration.ok", False, f"夹具异常：{type(e).__name__}: {e}"))
+    finally:
+        shutil.rmtree(td, ignore_errors=True)
+
+    # 未跟踪盲区回归：补丁夹带 manifest 未声明的新文件 → 必须 scope-violation
+    td = Path(tempfile.mkdtemp(prefix="ots-itg-stray-"))
+    try:
+        repo = _make_integration_repo(td)
+        r, _ev = _run_integration(
+            td, repo, DAG_SINGLE,
+            [("T-1", PATCH_STRAY, ["base.txt"])],
+            "", "", "ev-stray",
+        )
+        hit_kind = "scope-violation" in r["out"]
+        hit_path = "stray.txt" in r["out"]
+        out.append(
+            Assertion(
+                "check_integration.untracked-scope",
+                r["exit"] == 1 and hit_kind and hit_path,
+                f"exit={r['exit']}（期望 1）含'scope-violation'={hit_kind} 含'stray.txt'={hit_path}",
+            )
+        )
+    except Exception as e:  # noqa: BLE001
+        out.append(Assertion("check_integration.untracked-scope", False, f"夹具异常：{type(e).__name__}: {e}"))
+    finally:
+        shutil.rmtree(td, ignore_errors=True)
+
+    # 破坏性命令：cmd-unsafe 拒执行（不产出证据文件）并判失败
+    td = Path(tempfile.mkdtemp(prefix="ots-itg-unsafe-"))
+    try:
+        repo = _make_integration_repo(td)
+        r, ev = _run_integration(
+            td, repo, DAG_SINGLE,
+            [("T-1", PATCH_MODIFY, ["base.txt"])],
+            "git push origin main", "", "ev-unsafe",
+        )
+        hit_kind = "cmd-unsafe" in r["out"]
+        no_evidence = not (ev / "gate-01.txt").exists()
+        out.append(
+            Assertion(
+                "check_integration.cmd-unsafe",
+                r["exit"] == 1 and hit_kind and no_evidence,
+                f"exit={r['exit']}（期望 1）含'cmd-unsafe'={hit_kind} 未执行(无gate证据)={no_evidence}",
+            )
+        )
+    except Exception as e:  # noqa: BLE001
+        out.append(Assertion("check_integration.cmd-unsafe", False, f"夹具异常：{type(e).__name__}: {e}"))
+    finally:
+        shutil.rmtree(td, ignore_errors=True)
+
+    return out
+
+
 def run_all(dag: Path, agents: Path) -> list[Assertion]:
     assertions: list[Assertion] = []
     assertions.extend(plan_assertions(dag))
@@ -283,6 +597,10 @@ def run_all(dag: Path, agents: Path) -> list[Assertion]:
     assertions.extend(consistency_assertion(dag))
     assertions.extend(help_assertions())
     assertions.extend(parallel_help_assertions())
+    assertions.extend(plan_worktree_assertion())
+    assertions.extend(evidence_fixture_assertions())
+    assertions.extend(accept_patch_fixture_assertions())
+    assertions.extend(integration_assertions())
     return assertions
 
 

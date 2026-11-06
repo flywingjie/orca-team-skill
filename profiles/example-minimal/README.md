@@ -22,7 +22,7 @@ SPEC-001 → [spec-gate] → CTR-001
 
 ```text
 example-minimal/
-├── orchestration.toml   # DAG：任务、依赖、文件所有权、决策门
+├── orchestration.toml   # DAG：任务、依赖、文件所有权、worktree（一任务一个，L-1）、决策门
 ├── agents.toml          # 角色 → agent / 模型映射
 ├── tickets/             # 与 DAG 一一对应的示例工单（五段式）
 │   ├── SPEC-001.md
@@ -59,5 +59,6 @@ python scripts/check_consistency.py \
 
 - `model` / `model_family` 是占位值，替换成你实际可用的模型。
 - `files` 用于冲突检测；必须与工单「归属」段的独占文件一致。
+- `worktree` 一任务一个（`SPEC.md` `L-1`）；两个任务复用同一 worktree 会被 `plan.py` 判结构错误（退出码 2）。
 - `role_card` 路径相对于本目录。
 - 工单里的路径与验收命令指向**示例目标仓库**，不在 OTS 资产仓内实际存在；真实项目按本仓工具链替换。

@@ -6,11 +6,12 @@
     python scripts/plan.py --dag path/to/orchestration.toml --json
     python scripts/plan.py --dag path/to/orchestration.toml --max-parallel 4
 
-规则（对应 SPEC.md P-4、P-5）：
+规则（对应 SPEC.md P-4、P-5、L-1）：
     - 并行度 <= max_parallel
     - 同一波次内 files 不得有交集
     - 同一波次内 model_family 不得重复
     - 依赖必须存在；不得有环
+    - worktree 不得跨任务复用（L-1；违反属 DAG 结构错误，退出码 2）
 
 只读，不修改任何文件。需要 Python 3.11+（tomllib）。
 """
@@ -49,6 +50,7 @@ def build_tasks(data: dict) -> tuple[list[dict], dict[str, dict], dict[str, set[
         die("DAG 中没有 [[tasks]]。")
     by_id: dict[str, dict] = {}
     deps: dict[str, set[str]] = {}
+    worktrees: dict[str, str] = {}
     for t in tasks:
         tid = t.get("id")
         if not tid:
@@ -57,6 +59,11 @@ def build_tasks(data: dict) -> tuple[list[dict], dict[str, dict], dict[str, set[
             die(f"任务 id 重复：{tid}")
         by_id[tid] = t
         deps[tid] = set(t.get("depends_on", []))
+        wt = str(t.get("worktree", "") or "").strip()
+        if wt:
+            if wt in worktrees:
+                die(f"worktree 跨任务复用（L-1）：{wt} 被 {worktrees[wt]} 与 {tid} 同时使用")
+            worktrees[wt] = tid
     for tid, ds in deps.items():
         missing = ds - set(by_id)
         if missing:
@@ -216,6 +223,11 @@ def print_plan(result: dict) -> None:
 def main() -> int:
     try:
         sys.stdout.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+    try:
+        # die() 的中文错误走 stderr；不重配会在管道里按 GBK 编码（坑 2）
+        sys.stderr.reconfigure(encoding="utf-8")
     except Exception:
         pass
 

@@ -82,6 +82,11 @@ def main() -> int:
         sys.stdout.reconfigure(encoding="utf-8")
     except Exception:
         pass
+    try:
+        # die() 的中文错误走 stderr；不重配会在管道里按 GBK 编码（坑 2）
+        sys.stderr.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
 
     ap = argparse.ArgumentParser(description="派单前模型/文件互斥预检（只读）")
     ap.add_argument("--dag", required=True)

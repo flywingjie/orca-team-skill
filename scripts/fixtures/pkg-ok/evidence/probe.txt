@@ -1,0 +1,3 @@
+probe: invalid input rejected
+error: INVALID_INPUT
+exit code: 1

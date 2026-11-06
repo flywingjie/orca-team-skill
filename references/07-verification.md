@@ -99,6 +99,7 @@ git apply --stat change.patch
 - [ ] 没有夹带无关文件、生成产物、凭据
 - [ ] 新增文件已包含在补丁中
 - [ ] manifest 的 `files` 与实际路径一致
+- [ ] 每条 check 的证据在补丁包目录内且非空（防 `../` 与绝对路径逃出）
 
 不通过：退回越界部分；无法拆分则整单退回。
 
@@ -112,7 +113,7 @@ git apply --stat change.patch
 - [ ] 期望结果逐条核对
 - [ ] 负路径覆盖符合工单要求
 - [ ] 门禁命令（lint / typecheck / test / build）通过
-- [ ] evidence 中有对应输出
+- [ ] evidence 中有对应输出，且**位于补丁包目录内**（`evidence-outside-package`）
 - [ ] **证据内容指纹与 manifest 记录一致**（`SPEC.md` `V-10`）
 - [ ] 没有削弱测试、关闭检查、修改断言
 
@@ -141,7 +142,8 @@ git apply --stat change.patch
 - [ ] 各补丁按依赖顺序合入集成分支（拓扑序；某个补丁失败则跳过其下游任务）
 - [ ] 冲突已解决，且没有借机改契约/业务语义
 - [ ] **同一路径不出现在两个及以上补丁的归属文件里**（`P-4` 的机械检查：合并不报错但语义已坏）
-- [ ] 合入后的实际变更集 ⊆ 各补丁归属文件 ∪ 集成单独占的共享文件
+- [ ] 合入后的实际变更集（已跟踪变更 + 补丁新增、尚未 add 的未跟踪文件）
+      ⊆ 各补丁归属文件 ∪ 集成单独占的共享文件
 - [ ] 契约产物由集成单统一生成，且**只出现在一个**补丁里
 - [ ] 消费方（前端/调用方）验证通过
 - [ ] 合并后全量门禁通过
@@ -152,7 +154,7 @@ git apply --stat change.patch
 
 **脚本安全边界**（`SPEC.md` `V-11`）：
 
-- 只允许在被检工作区内执行 `git apply` 与 `git diff`；
+- 只允许在被检工作区内执行 `git apply` 与只读查询（`git diff` / `git ls-files`）；
   **不得** commit / push / merge / `reset --hard` / clean / checkout；
 - **不得**执行破坏性命令（`rm -rf`、`drop table`、`truncate`、`git push` 等），
   命中即**拒绝执行**并判失败；

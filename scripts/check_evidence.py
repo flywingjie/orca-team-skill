@@ -14,7 +14,8 @@
     ② 命令是否真实执行：工单验收命令与 manifest.checks 规范化后匹配，
        实际 exit_code == expect_exit_code（缺省 0，SPEC.md V-12）才通过；
        不等 → command-failed（判失败）；负路径探针可声明 expect_exit_code=1
-    ③ evidence 存在且非空：checks[].evidence 相对补丁包目录解析
+    ③ evidence 存在且非空，且必须位于补丁包目录内（防 ../ 与绝对路径逃出）
+       → 越界报 evidence-outside-package（判失败）
     ③b evidence 内容指纹（SPEC.md V-10）：文件字节 sha256 与 checks[].evidence_sha256 比对
     ③c 命令回显（弱 provenance）：evidence 文本是否含规范化后的命令（仅提示）
     ④ manifest 基本完整性：必填字段齐全、files 非空、checks 结构合法
@@ -227,6 +228,15 @@ def resolve_evidence(patch_dir: Path, ev: str) -> Path:
     return patch_dir.joinpath(*p.parts)
 
 
+def within_package(path: Path, patch_dir: Path) -> bool:
+    """evidence 解析后是否位于补丁包目录内（防 ../ 与绝对路径逃出）。"""
+    try:
+        path.resolve().relative_to(patch_dir.resolve())
+        return True
+    except ValueError:
+        return False
+
+
 def normalize_exit_code(value: Any) -> int | None:
     """把 exit_code / expect_exit_code 规范化为整数；缺失/非法/布尔返回 None。
 
@@ -365,7 +375,11 @@ def check_evidence_files(check_list: list, patch_dir: Path) -> list[dict]:
             out.append(finding("evidence-missing", f"checks[{idx}] 缺少 evidence 字段", cmd))
             continue
         path = resolve_evidence(patch_dir, ev)
-        if not path.exists():
+        if not within_package(path, patch_dir):
+            out.append(
+                finding("evidence-outside-package", f"checks[{idx}] evidence 超出补丁包目录：{ev}", cmd)
+            )
+        elif not path.exists():
             out.append(finding("evidence-missing", f"checks[{idx}] evidence 不存在：{ev}", cmd))
         elif not path.is_file():
             out.append(finding("evidence-missing", f"checks[{idx}] evidence 不是文件：{ev}", cmd))
@@ -416,6 +430,8 @@ def check_evidence_fingerprints(check_list: list, patch_dir: Path) -> list[dict]
         path = resolve_evidence(patch_dir, ev)
         if not path.exists() or not path.is_file():
             continue  # evidence-missing 已由 ③ 报出
+        if not within_package(path, patch_dir):
+            continue  # evidence-outside-package 已由 ③ 报出，不读包外文件
         raw = chk.get("evidence_sha256")
         if raw is None:
             out.append(
@@ -477,6 +493,8 @@ def check_command_echo(check_list: list, patch_dir: Path) -> list[dict]:
         path = resolve_evidence(patch_dir, ev)
         if not path.exists() or not path.is_file():
             continue  # evidence-missing 已由 ③ 报出
+        if not within_package(path, patch_dir):
+            continue  # evidence-outside-package 已由 ③ 报出，不读包外文件
         try:
             text = path.read_text(encoding="utf-8-sig")
         except Exception as e:  # noqa: BLE001
@@ -530,6 +548,9 @@ def print_fingerprints(check_list: list, patch_dir: Path) -> int:
         if not path.exists() or not path.is_file():
             print(f"checks[{idx}] evidence 不存在：{ev}，跳过指纹打印", file=sys.stderr)
             continue
+        if not within_package(path, patch_dir):
+            print(f"checks[{idx}] evidence 超出补丁包目录：{ev}，跳过指纹打印", file=sys.stderr)
+            continue
         print(f"{normalized}\t{file_sha256(path)}")
     return 0
 
@@ -568,6 +589,11 @@ def check_negative_paths(unchecked: list[str]) -> list[dict]:
 def main() -> int:
     try:
         sys.stdout.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+    try:
+        # die() 的中文错误走 stderr；不重配会在管道里按 GBK 编码（坑 2）
+        sys.stderr.reconfigure(encoding="utf-8")
     except Exception:
         pass
 

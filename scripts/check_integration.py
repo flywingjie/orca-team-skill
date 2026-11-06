@@ -26,16 +26,18 @@
     4. 跨补丁文件所有权：同一路径出现在 >1 个补丁 files → file-multi-owner（判失败）
     5. 契约产物唯一 owner：--contract-product 路径出现在 >1 个补丁 files
        → contract-product-multi-owner（判失败）
-    6. 变更范围：git diff --name-only <base> ⊆（补丁 files 并集 ∪ --allow）；
-       越界 → scope-violation（判失败）
+    6. 变更范围：实际变更集 = 已跟踪变更（git diff --name-only <base>）
+       ∪ 补丁新增的未跟踪文件（git ls-files --others --exclude-standard）；
+       ⊆（补丁 files 并集 ∪ --allow），越界 → scope-violation（判失败）；
+       排除本脚本 --evidence-out 与 --patches 自身位于 --repo 内的子树
     7. 门禁命令逐条真实执行（<evidence-out>/gate-NN.txt）；退出码 ≠ 0 → gate-failed（判失败）
     8. 消费方命令逐条真实执行（<evidence-out>/consumer-NN.txt）；退出码 ≠ 0 → consumer-failed（判失败）
     9. 生成 <evidence-out>/integration-manifest.json（含 evidence_sha256，与 V-10 同机制）
     10. 输出（文本 / --json）：ok / repo / patches / dag / applied / changed_paths / issues[] / summary
 
 安全硬约束（违反即失败）：
-    - 只允许在 --repo 内执行 git apply 与 git diff；禁止 commit/push/merge/
-      reset --hard/clean/checkout/stash/worktree
+    - 只允许在 --repo 内执行 git apply 与只读查询（git diff / git ls-files）；
+      禁止 commit/push/merge/reset --hard/clean/checkout/stash/worktree
     - 拒绝执行含破坏性片段的命令（cmd-unsafe，判失败，且不得执行）：
       rm -rf、del /f、drop table、drop database、truncate、mkfs、format、
       git reset --hard、git push、git clean、git checkout（小写子串匹配）
@@ -106,6 +108,15 @@ def is_git_repo(path: Path) -> bool:
     的 .git 是文件，.exists() 同样为真）。
     """
     return (path / ".git").exists()
+
+
+def is_under(child: Path, root: Path) -> bool:
+    """child 是否位于 root 之下（纯词法判断，两者都应已 resolve）。"""
+    try:
+        child.relative_to(root)
+        return True
+    except ValueError:
+        return False
 
 
 def sha256_file(path: Path) -> str:
@@ -352,6 +363,11 @@ def main() -> int:
         sys.stdout.reconfigure(encoding="utf-8")
     except Exception:
         pass
+    try:
+        # die() 的中文错误走 stderr；不重配会在管道里按 GBK 编码（坑 2）
+        sys.stderr.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
 
     ap = argparse.ArgumentParser(
         description="补丁三关之集成关：DAG 拓扑合入 + 跨补丁所有权 + 范围 + 门禁 + 消费方验证"
@@ -511,6 +527,8 @@ def main() -> int:
             )
 
     # 6. 变更范围：实际变更集 ⊆（补丁 files 并集 ∪ --allow）
+    #    变更集 = 已跟踪变更（git diff）∪ 补丁新增的未跟踪文件（git ls-files --others）。
+    #    只看 git diff 会漏掉补丁新建、尚未 add 的文件（V-11 ③ 的历史盲区）。
     changed_paths: list[str] = []
     scope_violations: list[str] = []
     if not args.dry_run:
@@ -518,7 +536,29 @@ def main() -> int:
         if diff_rc != 0:
             issues.append(finding("scope-check-error", f"git diff --name-only {base} 失败：{diff_out.strip()}"))
             diff_out = ""
-        changed_paths = [norm_path(p) for p in diff_out.splitlines() if p.strip()]
+        changed: set[str] = {norm_path(p) for p in diff_out.splitlines() if p.strip()}
+
+        # --exclude-standard 尊重 .gitignore：被忽略文件视为环境产物，不计入变更集
+        # （补丁内新增文件由范围关的 manifest↔patch 比对兜底）。
+        ls_rc, ls_out = git_run(repo, ["ls-files", "--others", "--exclude-standard", "-z"], args.timeout)
+        if ls_rc != 0:
+            issues.append(finding("scope-check-error", f"git ls-files --others 失败：{ls_out.strip()}"))
+        else:
+            # 排除本脚本产物目录与补丁包自身（若位于 --repo 内）；不排 repo 根，
+            # 否则把 --evidence-out 设成 repo 根会令范围检查形同虚设。
+            excluded = [
+                p for p in (evidence_out, patches_root)
+                if p != repo and is_under(p, repo)
+            ]
+            for raw in ls_out.split("\0"):
+                if not raw.strip():
+                    continue
+                p = norm_path(raw)
+                if any(is_under(repo / p, ex) for ex in excluded):
+                    continue
+                changed.add(p)
+
+        changed_paths = sorted(changed)
         allowed_union = set(allow_paths)
         for files in manifest_files.values():
             allowed_union.update(files)

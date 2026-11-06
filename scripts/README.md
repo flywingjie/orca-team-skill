@@ -1,9 +1,10 @@
 # 辅助脚本
 
-七个**只读**脚本，标准库实现，Python 3.11+（`tomllib`）。均支持 `--json`，
-退出码统一为：`0` 通过 / `1` 有失败项 / `2` 参数或读取错误。
+七个辅助脚本，标准库实现，Python 3.11+（`tomllib`）。均支持 `--json`，
+退出码统一为：`0` 通过 / `1` 有失败项 / `2` 参数、读取或 DAG 结构错误。
 
-它们只做机械检查，不替代人工验收，也不修改仓库、不调用 Orca。
+除 `check_integration.py` 会在指定 `--repo` 内合入补丁并实跑门禁（其设计职责）外，
+其余脚本均不修改任何文件；它们只做机械检查，不替代人工验收，也不调用 Orca。
 
 | 脚本 | 对应规范条目 | 管什么 |
 |---|---|---|
@@ -24,12 +25,13 @@ python scripts/plan.py --dag profiles/example-minimal/orchestration.toml
 python scripts/plan.py --dag path/to/orchestration.toml --max-parallel 4 --json
 ```
 
-约束（对应 `SPEC.md` `P-4`、`P-5`）：
+约束（对应 `SPEC.md` `P-4`、`P-5`、`L-1`）：
 
 - 依赖必须存在，不得有环；
 - 同一波次内 `files` 不得有交集；
 - 同一波次内 `model_family` 不得重复；
-- 并行度不超过 `max_parallel`（默认取 DAG 的 `orchestration.max_parallel`，再缺省为 8）。
+- 并行度不超过 `max_parallel`（默认取 DAG 的 `orchestration.max_parallel`，再缺省为 8）；
+- `worktree` 不得跨任务复用（`L-1`）——违反属 DAG 结构错误，与缺依赖/有环同级，退出码 2。
 
 输出每波任务、依赖、门禁与延后原因。脚本只给出可行排布建议，实际派单仍由协调者决定。
 
@@ -73,8 +75,9 @@ python scripts/accept_patch.py \
 - 补丁路径可解析（`diff --git`、`+++ b/`）；
 - 补丁路径 ⊆ `--allowed`（支持精确路径、目录前缀、glob）；
 - `manifest.files` 与补丁实际路径一致；
-- 每条 `checks[].evidence` 存在且非空；
-- 拦截 `.env*`、`id_rsa`、`.gh_token`、`credentials.json`、`*.pem/.key/.p12/.pfx`；
+- 每条 `checks[].evidence` 存在、非空，且**位于补丁包目录内**（防 `../` 与绝对路径逃出）；
+- 拦截 `.env*`、`id_rsa`/`id_ed25519`、`.gh_token`、`credentials(.json)`、`secrets.json`、
+  `.netrc`/`_netrc`、`.npmrc`、`.pgpass`、`.git-credentials`、`.htpasswd`、`*.pem/.key/.p12/.pfx`；
 - `git apply --check --binary`（可用 `--no-apply-check` 跳过）。
 
 **`--repo` 必须指向基线提交上的干净 worktree**。若工作区已包含同一改动，`git apply --check` 会报“patch does not apply”，这是环境问题而非补丁缺陷。推荐流程：
@@ -104,6 +107,8 @@ python scripts/check_evidence.py --ticket ... --patch-dir ... --json
 - 工单验收命令必须出现在 `manifest.checks[].command` 中 → 否则 `command-not-executed`（判失败）；
 - 每条 check 的 `exit_code` 必须为 0 → 否则 `command-failed`（判失败）；
 - 每条 check 的 `evidence` 文件必须存在且非空 → 否则 `evidence-missing` / `evidence-empty`（判失败）；
+- 每条 check 的 `evidence` 必须**位于补丁包目录内** → 否则 `evidence-outside-package`（判失败，
+  防 `../` 与绝对路径把包外文件当证据；越界时不读该文件）；
 - manifest 必填字段齐全、`files` 非空 → 否则 `manifest-missing-field` / `manifest-empty-files`（判失败）；
 - 负路径覆盖的未勾选项**只报告、不判失败**（`negative-path-unchecked`）。
 
@@ -171,8 +176,12 @@ python scripts/check_integration.py \
    ——这就是 `P-4` 的机械检查（合并不报错，但语义已经坏了）；
 5. **契约产物唯一 owner**：`--contract-product` 指定的路径若出现在 >1 个补丁里
    → `contract-product-multi-owner`（失败）；
-6. **变更范围**：合入后 `git diff --name-only <base>` 的实际变更集
-   ⊆ 各补丁归属文件 ∪ `--allow` → 越界 `scope-violation`（失败）；
+6. **变更范围**：合入后实际变更集 = 已跟踪变更（`git diff --name-only <base>`）
+   ∪ 补丁新增的未跟踪文件（`git ls-files --others --exclude-standard`）；
+   ⊆ 各补丁归属文件 ∪ `--allow` → 越界 `scope-violation`（失败）。
+   只看 `git diff` 会漏掉补丁新建、尚未 add 的文件（`V-11` ③ 的历史盲区）；
+   `--evidence-out` 与 `--patches` 若位于 `--repo` 内，其子树自动排除（脚本自身产物）；
+   被 `.gitignore` 忽略的文件视为环境产物不计入（补丁内新文件由范围关兑底）；
 7. 跑 `--gate-cmd`：退出码 ≠ 0 → `gate-failed`（失败），输出存 `<evidence-out>/gate-NN.txt`；
 8. 跑 `--consumer-cmd`：退出码 ≠ 0 → `consumer-failed`（失败），输出存 `consumer-NN.txt`；
 9. 产出 `<evidence-out>/integration-manifest.json`：每条命令记 `command` / `exit_code` /
@@ -182,7 +191,7 @@ python scripts/check_integration.py \
 
 **安全边界**（`SPEC.md` `V-11`）：
 
-- 只允许在被检工作区内执行 `git apply` 与 `git diff`；
+- 只允许在被检工作区内执行 `git apply` 与只读查询（`git diff` / `git ls-files`）；
   **不得** commit / push / merge / `reset --hard` / clean / checkout；
 - **不得**执行破坏性命令（`rm -rf`、`drop table`、`truncate`、`git push` 等）——
   命中即**拒绝执行**并判失败（`cmd-unsafe`）；
@@ -233,11 +242,31 @@ python scripts/selftest.py --dag <path> --agents <path>
 断言范围：
 
 - `plan.py`：退出码、波次数与序号连续性、任务 id 齐备、门 id 齐备、第 3 波并行构成、`verify`/`accept` 不同波；
+- `plan.py` L-1 负例：两个任务共用 worktree 的临时 DAG 必须判退出码 2；
 - `preflight.py`：退出码、输出含「任务 × 模型分配表」与「预检通过」；
 - 七个脚本的 `--help` 均可运行；
-- `check_consistency.py` 对示例工单与 DAG 的比对结论为一致（退出码 0）。
+- `check_consistency.py` 对示例工单与 DAG 的比对结论为一致（退出码 0）；
+- **正确关夹具端到端**（`scripts/fixtures/`）：正例通过、指纹不一致判失败、证据越出包判失败；
+- **范围关夹具端到端**：`.env` 危险文件判失败、证据越出包判失败（`--no-apply-check`，不依赖 git）；
+- **集成关端到端**（系统临时目录建 git 临时仓）：正例全过、补丁夹带未跟踪新文件 → `scope-violation`、
+  破坏性门禁命令 → `cmd-unsafe` 且未执行（无证据文件）。git 不可用时集成关断言跳过并标注。
 
 并行产出的脚本若当时尚未交付，`--help` 断言会**跳过并标注**，不判失败。
+
+## fixtures/ — 三关的静态夹具
+
+随仓分发的最小输入，供 `selftest.py` 做端到端断言，也用作正确 manifest 的范例：
+
+| 夹具 | 用途 | 期望结论 |
+|---|---|---|
+| `ticket-ok.md` | 验收表（含负路径探针行，`expect_exit_code: 1`） | —— |
+| `pkg-ok/` | 指纹一致的正例 manifest + evidence | 正确关通过 |
+| `pkg-mismatch/` | `evidence_sha256` 故意记错 | `evidence-fingerprint-mismatch` 失败 |
+| `pkg-escape/` | `evidence: "../ticket-ok.md"` 逃出包 | `evidence-outside-package` 失败（两关同测） |
+| `pkg-secret/` | 补丁新增 `.env` | 范围关「危险文件」失败 |
+
+指纹是生成时固化的；改动 evidence 内容后需用 `check_evidence.py --print-fingerprint` 重新生成记录。
+
 
 ## 典型串法
 
@@ -263,10 +292,11 @@ python scripts/selftest.py
 
 ## 共同约定
 
-- **只读**：不修改、不创建、不删除仓库文件；
+- **不修改仓库文件**：七只脚本不改仓库内容；`selftest.py` 的端到端夹具只写系统临时目录（结束即清理），
+  集成关在指定的 `--repo` 内 apply 补丁并执行门禁（其设计职责）；
 - **标准库**：不引入第三方依赖；
 - **跨平台**：路径一律用 `pathlib`，不硬编码分隔符；
 - **BOM 容错**：读 JSON / Markdown / TOML 一律 `encoding="utf-8-sig"`（兼容有/无 BOM）。
   Windows PowerShell 5.1 的 `Set-Content -Encoding UTF8` **默认写 BOM**，
   不容错会把合法文件误判为「不是合法 JSON / 非法 TOML」（见 `references/08-orca-cli.md` §5 坑 13）；
-- **中文输出**：显式 UTF-8，避免 PowerShell 管道按 GBK 解码导致乱码。
+- **中文输出**：stdout 与 stderr 都显式 UTF-8（`die()` 的中文错误走 stderr），避免 PowerShell 管道按 GBK 解码导致乱码。

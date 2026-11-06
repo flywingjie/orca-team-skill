@@ -1,0 +1,16 @@
+{
+  "ticket": "FIX-001",
+  "worker": "fixture",
+  "base_commit": "0000000000000000000000000000000000000000",
+  "files": [
+    "src/fix.py"
+  ],
+  "checks": [
+    {
+      "command": "python -m pytest tests/test_fix.py -q",
+      "exit_code": 0,
+      "evidence": "../ticket-ok.md"
+    }
+  ],
+  "notes": "静态夹具：evidence 越出补丁包目录 → evidence-outside-package"
+}

@@ -9,7 +9,7 @@ description: >-
   "worker 接管", "补丁验收", "并行开发", "task DAG", "指定模型跑 agent".
 ---
 
-# Orca Team Standard（OTS 1.2）
+# Orca Team Standard（OTS 1.3）
 
 多角色、多 Agent 并行协作的执行口径。**规范正文在 `SPEC.md`**；本文件是入口与快速操作卡。
 
@@ -79,7 +79,7 @@ description: >-
 3. 复制 `templates/task-ticket.md` 写工单。
 4. 跑 `scripts/preflight.py` 出分配表；`scripts/plan.py` 出波次；
    `scripts/check_consistency.py` 校验工单↔编排配置一致。
-5. 派单 → 监控 → 收补丁 → 三关（范围 `accept_patch.py`、正确 `check_evidence.py`、集成人工核）→ 逐文件 commit。
+5. 派单 → 监控 → 收补丁 → 三关（范围 `accept_patch.py`、正确 `check_evidence.py`、集成 `check_integration.py`）→ 逐文件 commit。
 6. 更新状态行与进度文件。
 
 > **Windows / PowerShell**：跑任何 Orca 命令前先读 `references/08-orca-cli.md` §5 的实跑坑位

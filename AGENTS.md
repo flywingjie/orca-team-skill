@@ -1,4 +1,4 @@
-# AGENTS.md — 多 Agent 协作总入口（OTS 1.2）
+# AGENTS.md — 多 Agent 协作总入口（OTS 1.3）
 
 本文件供 Codex、pi、Cursor、Claude Code 及其他读取 `AGENTS.md` 的 agent 使用。
 规范正文是 [`SPEC.md`](SPEC.md)；本文件是入口与执行摘要。
@@ -75,7 +75,7 @@
 | OpenCode | `adapters/opencode.md`（既有工作区限制） |
 | 纯人工 | `adapters/manual.md` |
 
-**规范正文不写工具命令**；命令只在上表文件中。
+**规范正文（`SPEC.md`）不写工具命令**；命令在各 `references/` 细则（05/06/07/08）与上表 `adapters/` 文件中。
 
 ## 7. 安装到目标仓库
 

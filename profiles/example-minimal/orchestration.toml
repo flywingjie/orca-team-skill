@@ -3,6 +3,8 @@
 #
 # 约定：task id 就是「工单单号」，必须与 tickets/ 下对应工单标题里的单号一致。
 # 该不变量由 scripts/check_consistency.py 校验（工单 ↔ DAG 四类比对）。
+# 每个任务的 worktree 必须互不相同（SPEC L-1，一任务一工作区）；
+# 由 scripts/plan.py 校验，复用即判 DAG 结构错误。
 
 [orchestration]
 name = "example-minimal"
@@ -94,7 +96,7 @@ role = "verifier"
 agent = "pi"
 model = "example-code-model-b"
 model_family = "family-c"
-worktree = "wt-VERIFY"
+worktree = "wt-VER-001"
 files = ["tests/acceptance/"]
 depends_on = ["INT-001"]
 base_branch = "feature/example-integration"
@@ -108,7 +110,7 @@ role = "verifier"
 agent = "claude"
 model = "example-strong-model"
 model_family = "family-a"
-worktree = "wt-VERIFY"
+worktree = "wt-ACC-001"
 files = ["reports/acceptance.md"]
 depends_on = ["VER-001"]
 base_branch = "feature/example-integration"

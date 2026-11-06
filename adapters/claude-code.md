@@ -4,14 +4,22 @@
 
 **方式 A：作为 skill 安装（推荐）**
 
-把本目录的以下内容放到 `~/.claude/skills/orca-team/`：
+把**整个目录**复制到 `~/.claude/skills/orca-team/`（与 `AGENTS.md` §7 方式三一致）：
 
 ```text
 ~/.claude/skills/orca-team/
-├── SKILL.md
+├── SKILL.md                 # 入口，与 SPEC.md、references/ 必须同级
+├── SPEC.md                  # 规范正文（SKILL.md 第一步就要读）
+├── AGENTS.md                # 跨工具入口
 ├── references/
-└── templates/
+├── templates/
+├── adapters/
+└── scripts/                 # SKILL.md 执行顺序第 4 步要用
 ```
+
+> 只拷 `SKILL.md + references/ + templates/` 是不够的：SKILL.md 内部指向 `SPEC.md`、
+> `adapters/<tool>.md` 与 `scripts/*.py` 的相对链接会断（`AGENTS.md` §7 已警告）。
+> `profiles/`（示例）与 `README.md` 可选，复制过去无害。
 
 `SKILL.md` 的 frontmatter 已包含触发词；之后提到“多 agent / Orca 派单 / 接管 / 补丁验收”时会加载。
 

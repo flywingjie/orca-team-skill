@@ -1,0 +1,10 @@
+{
+  "ticket": "FIX-002",
+  "worker": "fixture",
+  "base_commit": "0000000000000000000000000000000000000000",
+  "files": [
+    ".env"
+  ],
+  "checks": [],
+  "notes": "静态夹具：补丁夹带 .env → 危险文件"
+}
